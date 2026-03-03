@@ -22,7 +22,7 @@ import os
 #os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 # Makes MPS ops that are not correctly implemented (e.g. scaled_dot_product_attention
 # with causal masks) silently fall back to CPU instead of producing NaN/inf.
-#os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 from datasets import Dataset
@@ -73,9 +73,12 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # bfloat16 has limited MPS support — fp16 is safer on Apple Silicon.
-    # On CUDA or CPU the choice can be relaxed, but fp16 works everywhere here.
-    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
+    # bfloat16 shares float32's exponent range, preventing the overflow that
+    # fp16 (max ~65504) produces in Qwen2.5's attention scores and FFN
+    # activations — overflow causes inf logits → nan after log_softmax →
+    # nan KL and entropy.  PYTORCH_ENABLE_MPS_FALLBACK covers the handful of
+    # MPS ops that don't support bf16 natively.
+    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fine-tune Qwen2.5-7B with GRPO + LoRA on Apple Silicon (MPS).
+Fine-tune Qwen2.5-7B with SFT + LoRA on Apple Silicon (MPS).
 
 Memory requirements:
   - Minimum: 24GB unified memory (fp16 weights alone are ~14GB)
@@ -22,20 +22,20 @@ import os
 #os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 # Makes MPS ops that are not correctly implemented (e.g. scaled_dot_product_attention
 # with causal masks) silently fall back to CPU instead of producing NaN/inf.
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+#os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trl import GRPOConfig, GRPOTrainer
+from trl import SFTConfig, SFTTrainer
 from util import patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
 # Configuration — tweak these to suit your run
 # ---------------------------------------------------------------------------
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
-OUTPUT_DIR = "./qwen2.5-7b-grpo-lora"
+OUTPUT_DIR = "./qwen2.5-7b-sft-lora"
 
 LORA_R = 16
 LORA_ALPHA = 32
@@ -73,7 +73,7 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
+    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(
@@ -123,58 +123,88 @@ def build_dataset() -> Dataset:
     """
     Minimal demonstration dataset.  Replace with your own.
 
-    Each record must have a 'prompt' key.  The GRPOTrainer will generate
-    `num_generations` completions per prompt and score them with your reward
-    function(s).
+    Each record must have a 'text' key containing the fully-formatted training
+    example (e.g. a chat template string).  SFTTrainer trains the model to
+    predict every token in 'text' by default; set dataset_text_field or use
+    a formatting_func for more control.
     """
     examples = [
-        {"prompt": "Explain gradient descent in simple terms."},
-        {"prompt": "What are the key differences between supervised and unsupervised learning?"},
-        {"prompt": "Describe how the transformer attention mechanism works."},
-        {"prompt": "What is overfitting and how can it be prevented?"},
-        {"prompt": "Explain the bias-variance tradeoff."},
-        {"prompt": "What is backpropagation and why is it important?"},
-        {"prompt": "How does weight decay act as a regularizer?"},
-        {"prompt": "What is the purpose of batch normalization?"},
+        {
+            "text": (
+                "<|im_start|>user\nExplain gradient descent in simple terms."
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Gradient descent is an optimisation algorithm that iteratively "
+                "adjusts a model's parameters in the direction that reduces the "
+                "loss the most, like walking downhill by always stepping in the "
+                "steepest downward direction.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nWhat are the key differences between supervised "
+                "and unsupervised learning?<|im_end|>\n<|im_start|>assistant\n"
+                "Supervised learning trains on labelled examples to predict outputs, "
+                "while unsupervised learning finds structure in unlabelled data such "
+                "as clusters or latent representations.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nDescribe how the transformer attention mechanism works."
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Attention computes a weighted sum of value vectors, where the weights "
+                "come from the dot-product similarity between query and key vectors, "
+                "scaled and normalised with softmax.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nWhat is overfitting and how can it be prevented?"
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Overfitting is when a model memorises training data and fails to "
+                "generalise. It can be prevented with regularisation, dropout, early "
+                "stopping, or gathering more training data.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nExplain the bias-variance tradeoff."
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Bias measures how far average predictions are from the truth; variance "
+                "measures how much predictions change across datasets. Reducing one "
+                "typically increases the other, so good models balance both.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nWhat is backpropagation and why is it important?"
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Backpropagation efficiently computes gradients of the loss with respect "
+                "to every parameter by applying the chain rule backwards through the "
+                "computation graph, making large-scale neural network training feasible."
+                "<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nHow does weight decay act as a regularizer?"
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Weight decay adds a penalty proportional to the squared magnitude of "
+                "the weights to the loss, discouraging large parameter values and "
+                "reducing overfitting.<|im_end|>"
+            )
+        },
+        {
+            "text": (
+                "<|im_start|>user\nWhat is the purpose of batch normalization?"
+                "<|im_end|>\n<|im_start|>assistant\n"
+                "Batch normalisation standardises layer inputs to have zero mean and "
+                "unit variance within each mini-batch, stabilising and accelerating "
+                "training by reducing internal covariate shift.<|im_end|>"
+            )
+        },
     ]
     return Dataset.from_list(examples)
-
-
-# ---------------------------------------------------------------------------
-# Reward function(s)
-# ---------------------------------------------------------------------------
-def reward_length(completions: list[str], **kwargs) -> list[float]:
-    """
-    Demo reward: a Gaussian bell centred on a target word count.
-
-    Replace or extend this with a meaningful reward signal, for example:
-      - a trained reward model
-      - rule-based quality / correctness checks
-      - tool-call success / code execution results
-      - human preference scores
-
-    Args:
-        completions: list of generated text strings (one per sample in the
-                     rolled-out batch).
-        **kwargs: the GRPOTrainer may pass additional fields from the dataset
-                  row (e.g. ground-truth answers).
-
-    Returns:
-        List of scalar reward values, one per completion.
-    """
-    target_words = 150
-    sigma = 80
-    rewards = []
-    for text in completions:
-        n_words = len(text.split())
-        reward = float(
-            torch.exp(
-                torch.tensor(-((n_words - target_words) ** 2) / (2 * sigma ** 2))
-            )
-        )
-        #rewards.append(reward)
-        rewards.append(1.0)
-    return rewards
 
 
 # ---------------------------------------------------------------------------
@@ -190,30 +220,24 @@ def main():
 
     dataset = build_dataset()
 
-    training_args = GRPOConfig(
+    training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
         num_train_epochs=1,
 
         # ── Batch / memory ──────────────────────────────────────────────────
-        # Keep the per-device batch small — a 7B model leaves little headroom.
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,   # effective batch = 8
 
         # ── Optimiser ────────────────────────────────────────────────────────
-        learning_rate=5e-5,
+        learning_rate=2e-4,
         warmup_ratio=0.1,
         weight_decay=0.01,
+        lr_scheduler_type="cosine",
 
-        # ── GRPO-specific ─────────────────────────────────────────────────────
-        # Number of completions sampled per prompt per update step.
-        # Lower values save memory; minimum useful value is 2.
-        num_generations=4,
-        max_prompt_length=256,
-        max_completion_length=256,
-        temperature=0.9,
-        # KL penalty coefficient (β in the GRPO paper).
-        # Larger β keeps the policy closer to the reference; 0.0 disables KL.
-        beta=0.04,
+        # ── SFT-specific ──────────────────────────────────────────────────────
+        max_seq_length=512,
+        dataset_text_field="text",
+        packing=False,   # set True to pack short examples into one sequence
 
         # ── Precision ─────────────────────────────────────────────────────────
         # Do NOT enable fp16/bf16 flags here — we handle dtype at model-load
@@ -224,26 +248,22 @@ def main():
         # ── MPS compatibility ─────────────────────────────────────────────────
         # pin_memory uses CUDA-pinned memory which is unavailable on MPS.
         dataloader_pin_memory=False,
-        # vLLM is a CUDA-only inference back-end; disable it explicitly.
-        use_vllm=False,
 
         # ── Logging / checkpointing ───────────────────────────────────────────
         logging_steps=5,
         save_steps=50,
         save_total_limit=2,
-        report_to="wandb",         # set to "wandb" or "tensorboard" if desired
-        remove_unused_columns=False,
+        report_to="wandb",
     )
 
-    trainer = GRPOTrainer(
+    trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        processing_class=tokenizer,   # 'tokenizer=' also accepted in older TRL
-        reward_funcs=reward_length,   # pass a list for multiple reward signals
+        processing_class=tokenizer,
     )
 
-    print("Starting GRPO training …")
+    print("Starting SFT training …")
     trainer.train()
 
     print(f"\nSaving adapter + tokenizer to '{OUTPUT_DIR}' …")

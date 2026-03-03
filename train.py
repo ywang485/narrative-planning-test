@@ -15,7 +15,6 @@ Install dependencies:
   pip install -r requirements.txt
 """
 
-import functools
 import os
 
 # Must be set before `import torch`.
@@ -28,8 +27,9 @@ import os
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessor, LogitsProcessorList
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
+from util import patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
 # Configuration — tweak these to suit your run
@@ -176,37 +176,6 @@ def reward_length(completions: list[str], **kwargs) -> list[float]:
         )
         rewards.append(reward)
     return rewards
-
-
-# ---------------------------------------------------------------------------
-# NaN-safe generation (belt-and-suspenders for MPS)
-# ---------------------------------------------------------------------------
-class _NaNSafeLogits(LogitsProcessor):
-    """Replace any inf/nan in logits before they reach torch.multinomial.
-
-    MPS scaled_dot_product_attention can still emit NaN despite the fallback
-    flag in edge cases (e.g. all-padding positions, extreme activations).
-    This processor is the last line of defense before the sampling step.
-    """
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        # nan  → -inf  (zero probability after softmax)
-        # +inf → large-but-finite (preserves relative ordering)
-        return torch.nan_to_num(scores, nan=float("-inf"), posinf=1e4, neginf=float("-inf"))
-
-
-def patch_generate_with_safe_logits(model):
-    """Wrap model.generate so _NaNSafeLogits is always the first processor."""
-    _processor = _NaNSafeLogits()
-    _orig = model.generate
-
-    @functools.wraps(_orig)
-    def _safe_generate(*args, **kwargs):
-        lp = kwargs.pop("logits_processor", None) or LogitsProcessorList()
-        lp.insert(0, _processor)
-        return _orig(*args, logits_processor=lp, **kwargs)
-
-    model.generate = _safe_generate
-    return model
 
 
 # ---------------------------------------------------------------------------

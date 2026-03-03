@@ -26,6 +26,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from util import patch_generate_with_safe_logits
 
 
 def get_device() -> str:
@@ -57,6 +58,8 @@ def load_model(model_name: str, adapter_path: Optional[str], device: str):
         model = model.to(dtype)  # keep dtypes consistent
 
     model.eval()
+    if device == "mps":
+        model = patch_generate_with_safe_logits(model)
     print("Ready.\n")
     return model, tokenizer
 

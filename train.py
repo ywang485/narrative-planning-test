@@ -8,6 +8,8 @@ Memory requirements:
   - Alternative: swap MODEL_NAME to "Qwen/Qwen2.5-3B-Instruct" for 16GB Macs
 
 Note: bitsandbytes 4-bit/8-bit quantization is NOT supported on MPS.
+Note: the model is loaded in bfloat16 (not float16) — bfloat16's wider
+      exponent range prevents inf/nan overflow in Qwen2.5's logits on MPS.
 
 Install dependencies:
   pip install -r requirements.txt
@@ -67,9 +69,13 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # bfloat16 has limited MPS support — fp16 is safer on Apple Silicon.
-    # On CUDA or CPU the choice can be relaxed, but fp16 works everywhere here.
-    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
+    # Use bfloat16 everywhere a GPU is available.
+    # bfloat16 has the SAME exponent range as float32 (8 bits vs fp16's 5),
+    # so Qwen2.5's large logits never overflow to inf/nan during generation.
+    # float16's narrow exponent is the root cause of the
+    #   "probability tensor contains inf/nan" multinomial error on MPS.
+    # PyTorch MPS bfloat16 support is stable since PyTorch 2.4.
+    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(

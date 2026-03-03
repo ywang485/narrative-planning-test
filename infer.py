@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import os
+from typing import Optional
 
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -35,7 +36,7 @@ def get_device() -> str:
     return "cpu"
 
 
-def load_model(model_name: str, adapter_path: str | None, device: str):
+def load_model(model_name: str, adapter_path: Optional[str], device: str):
     dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading tokenizer from '{model_name}' …")

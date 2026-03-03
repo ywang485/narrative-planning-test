@@ -15,16 +15,20 @@ Install dependencies:
   pip install -r requirements.txt
 """
 
+import functools
 import os
 
-# Instruct PyTorch not to reserve the full MPS memory pool upfront.
-# This reduces OOM risk when the model + optimizer states compete for memory.
+# Must be set before `import torch`.
+# Instructs PyTorch not to reserve the full MPS memory pool upfront.
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+# Makes MPS ops that are not correctly implemented (e.g. scaled_dot_product_attention
+# with causal masks) silently fall back to CPU instead of producing NaN/inf.
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, LogitsProcessor, LogitsProcessorList
 from trl import GRPOConfig, GRPOTrainer
 
 # ---------------------------------------------------------------------------
@@ -179,6 +183,37 @@ def reward_length(completions: list[str], **kwargs) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
+# NaN-safe generation (belt-and-suspenders for MPS)
+# ---------------------------------------------------------------------------
+class _NaNSafeLogits(LogitsProcessor):
+    """Replace any inf/nan in logits before they reach torch.multinomial.
+
+    MPS scaled_dot_product_attention can still emit NaN despite the fallback
+    flag in edge cases (e.g. all-padding positions, extreme activations).
+    This processor is the last line of defense before the sampling step.
+    """
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # nan  → -inf  (zero probability after softmax)
+        # +inf → large-but-finite (preserves relative ordering)
+        return torch.nan_to_num(scores, nan=float("-inf"), posinf=1e4, neginf=float("-inf"))
+
+
+def patch_generate_with_safe_logits(model):
+    """Wrap model.generate so _NaNSafeLogits is always the first processor."""
+    _processor = _NaNSafeLogits()
+    _orig = model.generate
+
+    @functools.wraps(_orig)
+    def _safe_generate(*args, **kwargs):
+        lp = kwargs.pop("logits_processor", None) or LogitsProcessorList()
+        lp.insert(0, _processor)
+        return _orig(*args, logits_processor=lp, **kwargs)
+
+    model.generate = _safe_generate
+    return model
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -186,6 +221,8 @@ def main():
 
     model, tokenizer = load_model_and_tokenizer(MODEL_NAME, device)
     model = apply_lora(model)
+    if device == "mps":
+        model = patch_generate_with_safe_logits(model)
 
     dataset = build_dataset()
 

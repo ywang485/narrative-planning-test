@@ -1,0 +1,12 @@
+# MPS-compatible fine-tuning stack
+# Install with: pip install -r requirements.txt
+#
+# PyTorch MPS support ships in the standard macOS wheel since PyTorch 2.x.
+# No special index URL is needed for a recent pip install of torch on macOS.
+
+torch>=2.2.0
+transformers>=4.46.0
+trl>=0.12.0          # GRPOTrainer + GRPOConfig stable from 0.12
+peft>=0.13.0
+datasets>=2.18.0
+accelerate>=0.30.0

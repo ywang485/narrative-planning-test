@@ -20,10 +20,10 @@ import os
 
 # Must be set before `import torch`.
 # Instructs PyTorch not to reserve the full MPS memory pool upfront.
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+#os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 # Makes MPS ops that are not correctly implemented (e.g. scaled_dot_product_attention
 # with causal masks) silently fall back to CPU instead of producing NaN/inf.
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+#os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 from datasets import Dataset
@@ -73,13 +73,9 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Use bfloat16 everywhere a GPU is available.
-    # bfloat16 has the SAME exponent range as float32 (8 bits vs fp16's 5),
-    # so Qwen2.5's large logits never overflow to inf/nan during generation.
-    # float16's narrow exponent is the root cause of the
-    #   "probability tensor contains inf/nan" multinomial error on MPS.
-    # PyTorch MPS bfloat16 support is stable since PyTorch 2.4.
-    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
+    # bfloat16 has limited MPS support — fp16 is safer on Apple Silicon.
+    # On CUDA or CPU the choice can be relaxed, but fp16 works everywhere here.
+    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(
@@ -267,7 +263,7 @@ def main():
         logging_steps=5,
         save_steps=50,
         save_total_limit=2,
-        report_to="none",         # set to "wandb" or "tensorboard" if desired
+        report_to="wandb",         # set to "wandb" or "tensorboard" if desired
         remove_unused_columns=False,
     )
 

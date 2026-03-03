@@ -75,7 +75,7 @@ def load_model_and_tokenizer(model_name: str, device: str):
 
     # bfloat16 has limited MPS support — fp16 is safer on Apple Silicon.
     # On CUDA or CPU the choice can be relaxed, but fp16 works everywhere here.
-    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
+    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(
@@ -174,7 +174,8 @@ def reward_length(completions: list[str], **kwargs) -> list[float]:
                 torch.tensor(-((n_words - target_words) ** 2) / (2 * sigma ** 2))
             )
         )
-        rewards.append(reward)
+        #rewards.append(reward)
+        rewards.append(1.0)
     return rewards
 
 

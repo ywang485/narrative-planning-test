@@ -94,6 +94,9 @@ def load_model_and_tokenizer(model_name: str, device: str):
 # LoRA adapter
 # ---------------------------------------------------------------------------
 def apply_lora(model):
+    # Capture the base model dtype before PEFT adds anything.
+    base_dtype = next(model.parameters()).dtype
+
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=LORA_R,
@@ -103,6 +106,13 @@ def apply_lora(model):
         bias="none",
     )
     model = get_peft_model(model, lora_config)
+
+    # PEFT initialises adapter weights as float32 (standard nn.Linear defaults),
+    # regardless of the base model's dtype.  A bfloat16 base + float32 adapters
+    # mix during the forward pass and can produce inf/nan logits on MPS.
+    # Re-casting the whole model ensures every parameter shares the same dtype.
+    model = model.to(base_dtype)
+
     model.print_trainable_parameters()
     print()
     return model

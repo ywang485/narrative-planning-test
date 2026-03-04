@@ -31,7 +31,7 @@ import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import List, Optional
 
 import google.generativeai as genai
 
@@ -138,23 +138,26 @@ QUESTION_GEN_SYSTEM = """\
 # Gemini helpers
 # ---------------------------------------------------------------------------
 
-def make_model(model_name: str) -> genai.GenerativeModel:
+def _configure_api() -> None:
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         raise EnvironmentError("GEMINI_API_KEY environment variable is not set.")
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel(model_name)
+
+
+def make_model(model_name: str, system_instruction: str) -> genai.GenerativeModel:
+    # system_instruction must be set on the model, not passed to generate_content()
+    return genai.GenerativeModel(model_name, system_instruction=system_instruction)
 
 
 def call_with_retry(model: genai.GenerativeModel, prompt: str,
-                    system: str, max_retries: int = 5) -> str:
+                    max_retries: int = 5) -> str:
     """Call the model with exponential-backoff retry on rate-limit errors."""
     for attempt in range(max_retries):
         try:
             response = model.generate_content(
                 [{"role": "user", "parts": [prompt]}],
                 generation_config=genai.types.GenerationConfig(temperature=0.9),
-                system_instruction=system,
             )
             return response.text.strip()
         except Exception as exc:
@@ -165,16 +168,13 @@ def call_with_retry(model: genai.GenerativeModel, prompt: str,
 
 
 def generate_answer(model: genai.GenerativeModel, question: str) -> str:
-    return call_with_retry(model, question, ANSWER_SYSTEM)
+    return call_with_retry(model, question)
 
 
-def generate_extra_questions(model: genai.GenerativeModel, n: int) -> list[str]:
+def generate_extra_questions(model_name: str, n: int) -> List[str]:
     """Ask Gemini to invent n fresh questions."""
-    raw = call_with_retry(
-        model,
-        f"请生成{n}个问题。",
-        QUESTION_GEN_SYSTEM.format(n=n),
-    )
+    model = make_model(model_name, QUESTION_GEN_SYSTEM.format(n=n))
+    raw = call_with_retry(model, f"请生成{n}个问题。")
     questions = [q.strip() for q in raw.splitlines() if q.strip().endswith("？") or q.strip().endswith("?")]
     return questions[:n]
 
@@ -192,8 +192,8 @@ def build_record(model: genai.GenerativeModel, question: str) -> Optional[dict]:
         return None
 
 
-def build_dataset(questions: list[str], model_name: str, workers: int) -> list[dict]:
-    model = make_model(model_name)
+def build_dataset(questions: List[str], model_name: str, workers: int) -> List[dict]:
+    model = make_model(model_name, ANSWER_SYSTEM)
     records = []
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -238,13 +238,13 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     args = parse_args()
+    _configure_api()
 
     questions = list(SEED_QUESTIONS)
 
     if args.extra > 0:
         log.info("Generating %d extra questions with Gemini …", args.extra)
-        model = make_model(args.model)
-        extra = generate_extra_questions(model, args.extra)
+        extra = generate_extra_questions(args.model, args.extra)
         log.info("Got %d extra questions.", len(extra))
         questions.extend(extra)
 

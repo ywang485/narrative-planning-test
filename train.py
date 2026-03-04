@@ -39,6 +39,14 @@ from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
 OUTPUT_DIR = "./qwen2.5-7b-grpo-lora"
 
+# Optional: path to a prior checkpoint to use as the starting point for GRPO.
+#   - LoRA adapter checkpoint (contains adapter_config.json): the adapter is
+#     loaded on top of MODEL_NAME and training continues from those weights.
+#   - Full / merged model directory: loaded directly as the base model, then a
+#     fresh LoRA adapter is applied before GRPO training starts.
+# Leave as "" (or unset CHECKPOINT_PATH env var) to start from MODEL_NAME.
+CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", "")
+
 LORA_R = 16
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.05
@@ -93,6 +101,50 @@ def load_model_and_tokenizer(model_name: str, device: str):
     model = model.to(device)
     print("Model loaded.\n")
     return model, tokenizer
+
+
+def load_from_checkpoint(checkpoint_path: str, base_model_name: str, device: str):
+    """Load a model from a prior checkpoint for use as the GRPO starting point.
+
+    Two checkpoint formats are supported:
+      - LoRA adapter directory (contains adapter_config.json): the base model
+        is loaded from `base_model_name` and the adapter weights are applied on
+        top.  The returned model already has LoRA — do NOT call apply_lora().
+      - Full / merged model directory: loaded directly as the base model.
+        Call apply_lora() on the returned model as usual.
+
+    Returns:
+        (model, tokenizer, lora_already_applied: bool)
+    """
+    from peft import PeftModel
+
+    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
+
+    # Prefer tokenizer from the checkpoint; fall back to the base model.
+    tok_source = checkpoint_path if os.path.exists(
+        os.path.join(checkpoint_path, "tokenizer_config.json")
+    ) else base_model_name
+    tokenizer = AutoTokenizer.from_pretrained(tok_source, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    adapter_config = os.path.join(checkpoint_path, "adapter_config.json")
+    if os.path.exists(adapter_config):
+        print(f"Checkpoint is a LoRA adapter — loading base '{base_model_name}' …")
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model_name, torch_dtype=dtype, trust_remote_code=True
+        ).to(device)
+        print(f"Attaching adapter weights from '{checkpoint_path}' …")
+        model = PeftModel.from_pretrained(base, checkpoint_path).to(dtype)
+        print("Checkpoint loaded (LoRA adapter).\n")
+        return model, tokenizer, True
+    else:
+        print(f"Checkpoint is a full model — loading from '{checkpoint_path}' …")
+        model = AutoModelForCausalLM.from_pretrained(
+            checkpoint_path, torch_dtype=dtype, trust_remote_code=True
+        ).to(device)
+        print("Checkpoint loaded (full model).\n")
+        return model, tokenizer, False
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +287,15 @@ def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
 def main():
     device = get_device()
 
-    model, tokenizer = load_model_and_tokenizer(MODEL_NAME, device)
-    model = apply_lora(model)
+    if CHECKPOINT_PATH:
+        model, tokenizer, lora_applied = load_from_checkpoint(CHECKPOINT_PATH, MODEL_NAME, device)
+    else:
+        model, tokenizer = load_model_and_tokenizer(MODEL_NAME, device)
+        lora_applied = False
+
+    if not lora_applied:
+        model = apply_lora(model)
+
     if device == "mps":
         model = patch_forward_with_safe_logits(model)   # guards KL/entropy forward pass
         model = patch_generate_with_safe_logits(model)  # guards sampling step

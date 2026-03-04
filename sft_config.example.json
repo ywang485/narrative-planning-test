@@ -1,0 +1,9 @@
+{
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "output_dir": "./qwen2.5-7b-sft-lora",
+  "dataset_path": "dayo_dataset.jsonl",
+  "eval_dataset_path": "test.jsonl",
+  "eval_interval_epochs": 1,
+  "eval_gemini_model": "gemini-2.0-flash",
+  "eval_max_samples": 20
+}

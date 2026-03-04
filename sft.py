@@ -16,7 +16,10 @@ Install dependencies:
 """
 
 import json
+import logging
 import os
+import re
+from typing import List, Tuple
 
 # Must be set before `import torch`.
 # Instructs PyTorch not to reserve the full MPS memory pool upfront.
@@ -28,7 +31,7 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import SFTConfig, SFTTrainer
 from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 
@@ -41,6 +44,18 @@ OUTPUT_DIR   = "./qwen2.5-7b-sft-lora"
 # your own dataset instead of the built-in demo examples.
 #   DATASET_PATH=dayo_dataset.jsonl python sft.py
 DATASET_PATH = os.getenv("DATASET_PATH", "")
+
+# Evaluation (LLM-as-judge via Gemini).  All optional — eval is skipped when
+# EVAL_DATASET_PATH is unset.
+#   EVAL_DATASET_PATH=test.jsonl EVAL_INTERVAL_EPOCHS=2 python sft.py
+EVAL_DATASET_PATH    = os.getenv("EVAL_DATASET_PATH", "")
+EVAL_INTERVAL_EPOCHS = int(os.getenv("EVAL_INTERVAL_EPOCHS", "1"))
+EVAL_GEMINI_MODEL    = os.getenv("EVAL_GEMINI_MODEL", "gemini-2.0-flash")
+# Cap number of test examples to limit API cost; 0 = use all.
+EVAL_MAX_SAMPLES     = int(os.getenv("EVAL_MAX_SAMPLES", "20"))
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 LORA_R = 16
 LORA_ALPHA = 32
@@ -222,6 +237,121 @@ def build_dataset() -> Dataset:
 
 
 # ---------------------------------------------------------------------------
+# Evaluation — LLM-as-judge (Gemini)
+# ---------------------------------------------------------------------------
+_USER_RE = re.compile(r"<\|im_start\|>user\n(.*?)<\|im_end\|>", re.DOTALL)
+
+
+def _extract_question(text: str) -> str:
+    m = _USER_RE.search(text)
+    return m.group(1).strip() if m else text
+
+
+def load_eval_examples(path: str, max_samples: int) -> List[str]:
+    with open(path, encoding="utf-8") as f:
+        lines = [l for l in f if l.strip()]
+    if max_samples > 0:
+        lines = lines[:max_samples]
+    return [_extract_question(json.loads(l)["text"]) for l in lines]
+
+
+def _generate_response(model, tokenizer, question: str, device: str,
+                        max_new_tokens: int = 150) -> str:
+    prompt = f"<|im_start|>user\n{question}<|im_end|>\n<|im_start|>assistant\n"
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    with torch.no_grad():
+        out_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    new_ids = out_ids[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+
+
+class GeminiJudge:
+    """Calls Gemini to decide whether a piece of text is a valid 打油诗."""
+
+    _SYSTEM = (
+        "你是评判打油诗的专家。给你一段文字，判断它是否是合格的打油诗。\n"
+        "打油诗的标准：多行诗歌结构、押韵、语气幽默风趣、贴近日常生活。\n"
+        "先回答 YES 或 NO（大写），然后用一句中文说明原因。"
+    )
+
+    def __init__(self, model_name: str) -> None:
+        import google.generativeai as genai
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise EnvironmentError("GEMINI_API_KEY is required for evaluation.")
+        genai.configure(api_key=api_key)
+        self._model = genai.GenerativeModel(model_name, system_instruction=self._SYSTEM)
+
+    def judge(self, text: str) -> Tuple[bool, str]:
+        try:
+            resp = self._model.generate_content(f"请判断以下文字是否是打油诗：\n\n{text}")
+            verdict = resp.text.strip()
+            return verdict.upper().startswith("YES"), verdict
+        except Exception as exc:
+            log.warning("Gemini judge call failed: %s", exc)
+            return False, f"error: {exc}"
+
+
+class DayoEvalCallback(TrainerCallback):
+    """Runs 打油诗 quality evaluation after every `eval_interval` training epochs."""
+
+    def __init__(self, tokenizer, questions: List[str], judge: GeminiJudge,
+                 eval_interval: int, device: str) -> None:
+        self.tokenizer      = tokenizer
+        self.questions      = questions
+        self.judge          = judge
+        self.eval_interval  = eval_interval
+        self.device         = device
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        epoch = round(state.epoch)
+        if epoch % self.eval_interval != 0:
+            return control
+
+        log.info("── 打油诗 eval  epoch=%d  n=%d ──", epoch, len(self.questions))
+        model.eval()
+        results = []
+        try:
+            for q in self.questions:
+                answer = _generate_response(model, self.tokenizer, q, self.device)
+                passed, verdict = self.judge.judge(answer)
+                results.append({
+                    "epoch": epoch, "question": q,
+                    "answer": answer, "passed": passed, "verdict": verdict,
+                })
+        finally:
+            model.train()
+
+        n_passed  = sum(r["passed"] for r in results)
+        pass_rate = n_passed / len(results) if results else 0.0
+        log.info("Epoch %d — 打油诗 pass rate: %d/%d (%.1f%%)",
+                 epoch, n_passed, len(results), pass_rate * 100)
+
+        # Append per-example results to a file inside OUTPUT_DIR
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        log_path = os.path.join(OUTPUT_DIR, "eval_results.jsonl")
+        with open(log_path, "a", encoding="utf-8") as f:
+            for r in results:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        log.info("Eval details appended to '%s'.", log_path)
+
+        # Push scalar metric to wandb when enabled
+        if "wandb" in (args.report_to or []):
+            try:
+                import wandb
+                wandb.log({"eval/dayo_pass_rate": pass_rate}, step=state.global_step)
+            except Exception as exc:
+                log.warning("wandb logging failed: %s", exc)
+
+        return control
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -234,6 +364,23 @@ def main():
         model = patch_generate_with_safe_logits(model)  # guards inference/eval sampling
 
     dataset = build_dataset()
+
+    # Set up LLM-as-judge eval callback (skipped when EVAL_DATASET_PATH is unset)
+    eval_callback = None
+    if EVAL_DATASET_PATH and os.path.isfile(EVAL_DATASET_PATH):
+        questions = load_eval_examples(EVAL_DATASET_PATH, EVAL_MAX_SAMPLES)
+        judge     = GeminiJudge(EVAL_GEMINI_MODEL)
+        eval_callback = DayoEvalCallback(
+            tokenizer=tokenizer,
+            questions=questions,
+            judge=judge,
+            eval_interval=EVAL_INTERVAL_EPOCHS,
+            device=device,
+        )
+        log.info("Eval enabled: %d questions every %d epoch(s) via %s",
+                 len(questions), EVAL_INTERVAL_EPOCHS, EVAL_GEMINI_MODEL)
+    else:
+        log.info("Eval disabled (set EVAL_DATASET_PATH to enable).")
 
     training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
@@ -276,6 +423,7 @@ def main():
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
+        callbacks=[eval_callback] if eval_callback else None,
     )
 
     print("Starting SFT training …")

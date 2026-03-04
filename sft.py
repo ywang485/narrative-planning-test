@@ -236,7 +236,7 @@ def main():
         lr_scheduler_type="cosine",
 
         # ── SFT-specific ──────────────────────────────────────────────────────
-        max_seq_length=512,
+        max_length=512,
         dataset_text_field="text",
         packing=False,   # set True to pack short examples into one sequence
 

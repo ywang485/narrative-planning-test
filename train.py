@@ -271,7 +271,7 @@ def _gemini_score(prompt: str, completion: str) -> float:
     return 0.0
 
 
-def _conciseness_score(text: str, ideal: int = 80, max_words: int = 250) -> float:
+def _conciseness_score(text: str, ideal: int = 5, max_words: int = 250) -> float:
     """Returns 1.0 for ≤ `ideal` words, linearly decays to 0.0 at `max_words`."""
     n = len(text.split())
     if n <= ideal:
@@ -333,7 +333,7 @@ def main():
 
     training_args = GRPOConfig(
         output_dir=OUTPUT_DIR,
-        num_train_epochs=50,
+        num_train_epochs=10,
 
         # ── Batch / memory ──────────────────────────────────────────────────
         # Keep the per-device batch small — a 7B model leaves little headroom.
@@ -341,16 +341,16 @@ def main():
         gradient_accumulation_steps=8,   # effective batch = 8
 
         # ── Optimiser ────────────────────────────────────────────────────────
-        learning_rate=5e-5,
+        learning_rate=1e-5,
         warmup_ratio=0.1,
         weight_decay=0.01,
 
         # ── GRPO-specific ─────────────────────────────────────────────────────
         # Number of completions sampled per prompt per update step.
         # Lower values save memory; minimum useful value is 2.
-        num_generations=2,
+        num_generations=8,
         max_prompt_length=256,
-        max_completion_length=256,
+        max_completion_length=99999,
         temperature=0.9,
         # KL penalty coefficient (β in the GRPO paper).
         # Larger β keeps the policy closer to the reference; 0.0 disables KL.

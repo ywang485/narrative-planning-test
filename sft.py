@@ -22,14 +22,14 @@ import os
 #os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 # Makes MPS ops that are not correctly implemented (e.g. scaled_dot_product_attention
 # with causal masks) silently fall back to CPU instead of producing NaN/inf.
-#os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
-from util import patch_generate_with_safe_logits
+from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
 # Configuration — tweak these to suit your run
@@ -73,7 +73,7 @@ def load_model_and_tokenizer(model_name: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
+    dtype = torch.bfloat16 if device in ("mps", "cuda") else torch.float32
 
     print(f"Loading '{model_name}' with dtype={dtype} …")
     model = AutoModelForCausalLM.from_pretrained(
@@ -216,7 +216,8 @@ def main():
     model, tokenizer = load_model_and_tokenizer(MODEL_NAME, device)
     model = apply_lora(model)
     if device == "mps":
-        model = patch_generate_with_safe_logits(model)
+        model = patch_forward_with_safe_logits(model)   # guards cross-entropy forward pass
+        model = patch_generate_with_safe_logits(model)  # guards inference/eval sampling
 
     dataset = build_dataset()
 
@@ -235,7 +236,7 @@ def main():
         lr_scheduler_type="cosine",
 
         # ── SFT-specific ──────────────────────────────────────────────────────
-        max_seq_length=512,
+        max_length=512,
         dataset_text_field="text",
         packing=False,   # set True to pack short examples into one sequence
 

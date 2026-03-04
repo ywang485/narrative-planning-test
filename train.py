@@ -269,22 +269,10 @@ def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
     """
     prompts = kwargs.get("prompts", [""] * len(completions))
     rewards = []
-<<<<<<< HEAD
-    for text in completions:
-        n_words = len(text.split())
-        reward = float(
-            torch.exp(
-                torch.tensor(-((n_words - target_words) ** 2) / (2 * sigma ** 2))
-            )
-        )
-        rewards.append(reward)
-        #rewards.append(1.0)
-=======
     for prompt, completion in zip(prompts, completions):
         llm = _gemini_score(prompt, completion)
         concise = _conciseness_score(completion)
         rewards.append(0.7 * llm + 0.3 * concise)
->>>>>>> origin/claude/qwen-grpo-lora-finetuning-IdbU6
     return rewards
 
 

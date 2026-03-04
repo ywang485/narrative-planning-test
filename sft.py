@@ -36,26 +36,52 @@ from trl import SFTConfig, SFTTrainer
 from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
-# Configuration — tweak these to suit your run
+# Logging (initialised early so config loading can emit messages)
 # ---------------------------------------------------------------------------
-MODEL_NAME   = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
-OUTPUT_DIR   = "./qwen2.5-7b-sft-lora"
-# Set this env-var to a JSONL file produced by build_dayo_dataset.py to use
-# your own dataset instead of the built-in demo examples.
-#   DATASET_PATH=dayo_dataset.jsonl python sft.py
-DATASET_PATH = os.getenv("DATASET_PATH", "")
-
-# Evaluation (LLM-as-judge via Gemini).  All optional — eval is skipped when
-# EVAL_DATASET_PATH is unset.
-#   EVAL_DATASET_PATH=test.jsonl EVAL_INTERVAL_EPOCHS=2 python sft.py
-EVAL_DATASET_PATH    = os.getenv("EVAL_DATASET_PATH", "")
-EVAL_INTERVAL_EPOCHS = int(os.getenv("EVAL_INTERVAL_EPOCHS", "1"))
-EVAL_GEMINI_MODEL    = os.getenv("EVAL_GEMINI_MODEL", "gemini-2.0-flash")
-# Cap number of test examples to limit API cost; 0 = use all.
-EVAL_MAX_SAMPLES     = int(os.getenv("EVAL_MAX_SAMPLES", "20"))
-
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+# ---------------------------------------------------------------------------
+# Configuration — config file + env-vars
+#
+# Values are resolved in this priority order (highest first):
+#   1. Environment variable
+#   2. JSON config file  (default: sft_config.json, override with CONFIG_FILE=)
+#   3. Built-in default
+#
+# Example config file (sft_config.json):
+#   {
+#     "dataset_path": "dayo_dataset.jsonl",
+#     "eval_dataset_path": "test.jsonl",
+#     "eval_interval_epochs": 2
+#   }
+# ---------------------------------------------------------------------------
+def _load_config(path: str) -> dict:
+    if path and os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        log.info("Loaded config file '%s'.", path)
+        return cfg
+    return {}
+
+_cfg = _load_config(os.getenv("CONFIG_FILE", "sft_config.json"))
+
+def _get(key: str, env_var: str, default):
+    """Resolve a config value: env-var > config file > default."""
+    env_val = os.getenv(env_var)
+    if env_val is not None:
+        return env_val
+    return _cfg.get(key, default)
+
+MODEL_NAME   = _get("model_name",  "MODEL_NAME",  "Qwen/Qwen2.5-7B-Instruct")
+OUTPUT_DIR   = _get("output_dir",  "OUTPUT_DIR",  "./qwen2.5-7b-sft-lora")
+DATASET_PATH = _get("dataset_path", "DATASET_PATH", "")
+
+EVAL_DATASET_PATH    = _get("eval_dataset_path",    "EVAL_DATASET_PATH",    "")
+EVAL_INTERVAL_EPOCHS = int(_get("eval_interval_epochs", "EVAL_INTERVAL_EPOCHS", 1))
+EVAL_GEMINI_MODEL    = _get("eval_gemini_model",    "EVAL_GEMINI_MODEL",    "gemini-2.0-flash")
+EVAL_MAX_SAMPLES     = int(_get("eval_max_samples", "EVAL_MAX_SAMPLES",     20))
 
 LORA_R = 16
 LORA_ALPHA = 32

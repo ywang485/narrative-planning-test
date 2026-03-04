@@ -208,13 +208,13 @@ def main():
         # ── GRPO-specific ─────────────────────────────────────────────────────
         # Number of completions sampled per prompt per update step.
         # Lower values save memory; minimum useful value is 2.
-        num_generations=1,
+        num_generations=2,
         max_prompt_length=256,
         max_completion_length=256,
         temperature=0.9,
         # KL penalty coefficient (β in the GRPO paper).
         # Larger β keeps the policy closer to the reference; 0.0 disables KL.
-        beta=0.04,
+        beta=0.1,
 
         # ── Precision ─────────────────────────────────────────────────────────
         # Do NOT enable fp16/bf16 flags here — we handle dtype at model-load

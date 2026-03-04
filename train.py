@@ -323,8 +323,11 @@ def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
     prompts = kwargs.get("prompts", [""] * len(completions))
     rewards = []
     for prompt, completion in zip(prompts, completions):
-        llm = _gemini_score(prompt, completion)
-        concise = _conciseness_score(completion)
+        # In conversational mode, prompts/completions are lists of message dicts.
+        prompt_text = prompt[-1]["content"] if isinstance(prompt, list) else prompt
+        completion_text = completion[-1]["content"] if isinstance(completion, list) else completion
+        llm = _gemini_score(prompt_text, completion_text)
+        concise = _conciseness_score(completion_text)
         rewards.append(0.7 * llm + 0.3 * concise)
     return rewards
 

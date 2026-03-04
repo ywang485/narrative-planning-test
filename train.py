@@ -270,15 +270,34 @@ def _gemini_score(prompt: str, completion: str) -> float:
         print(f"[gemini_score] Error: {e}")
     return 0.0
 
-
-def _conciseness_score(text: str, ideal: int = 5, max_words: int = 250) -> float:
-    """Returns 1.0 for ≤ `ideal` words, linearly decays to 0.0 at `max_words`."""
+def _conciseness_score(
+    text: str,
+    ideal_words: int = 15,
+    max_words: int = 250,
+    ideal_chars: int = 50,
+    max_chars: int = 1500,
+) -> float:
+    """Returns 1.0 at or below both ideal thresholds; linearly decays each axis to 0.0
+    at its max threshold.  Final score is the minimum of the two penalties."""
     n = len(text.split())
-    if n <= ideal:
-        return 1.0
-    if n >= max_words:
-        return 0.0
-    return 1.0 - (n - ideal) / (max_words - ideal)
+    if n <= ideal_words:
+        word_score = 1.0
+    elif n >= max_words:
+        word_score = 0.0
+    else:
+        word_score = (max_words - n) / (max_words - ideal_words)
+
+    c = len(text)
+    if c <= ideal_chars:
+        char_score = 1.0
+    elif c >= max_chars:
+        char_score = 0.0
+    else:
+        char_score = (max_chars - c) / (max_chars - ideal_chars)
+
+    return min(word_score, char_score)
+
+
 
 
 # ---------------------------------------------------------------------------

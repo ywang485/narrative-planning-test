@@ -29,7 +29,7 @@ from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
-from util import patch_generate_with_safe_logits
+from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
 # Configuration — tweak these to suit your run
@@ -190,7 +190,8 @@ def main():
     model, tokenizer = load_model_and_tokenizer(MODEL_NAME, device)
     model = apply_lora(model)
     if device == "mps":
-        model = patch_generate_with_safe_logits(model)
+        model = patch_forward_with_safe_logits(model)   # guards KL/entropy forward pass
+        model = patch_generate_with_safe_logits(model)  # guards sampling step
 
     dataset = build_dataset()
 

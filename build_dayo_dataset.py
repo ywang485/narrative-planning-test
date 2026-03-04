@@ -31,6 +31,7 @@ import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 
 import google.generativeai as genai
 
@@ -182,7 +183,7 @@ def generate_extra_questions(model: genai.GenerativeModel, n: int) -> list[str]:
 # Dataset building
 # ---------------------------------------------------------------------------
 
-def build_record(model: genai.GenerativeModel, question: str) -> dict | None:
+def build_record(model: genai.GenerativeModel, question: str) -> Optional[dict]:
     try:
         answer = generate_answer(model, question)
         return {"text": qwen_chat(question, answer)}

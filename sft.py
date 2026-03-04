@@ -15,6 +15,7 @@ Install dependencies:
   pip install -r requirements.txt
 """
 
+import json
 import os
 
 # Must be set before `import torch`.
@@ -34,8 +35,12 @@ from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 # ---------------------------------------------------------------------------
 # Configuration — tweak these to suit your run
 # ---------------------------------------------------------------------------
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
-OUTPUT_DIR = "./qwen2.5-7b-sft-lora"
+MODEL_NAME   = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
+OUTPUT_DIR   = "./qwen2.5-7b-sft-lora"
+# Set this env-var to a JSONL file produced by build_dayo_dataset.py to use
+# your own dataset instead of the built-in demo examples.
+#   DATASET_PATH=dayo_dataset.jsonl python sft.py
+DATASET_PATH = os.getenv("DATASET_PATH", "")
 
 LORA_R = 16
 LORA_ALPHA = 32
@@ -121,13 +126,22 @@ def apply_lora(model):
 # ---------------------------------------------------------------------------
 def build_dataset() -> Dataset:
     """
-    Minimal demonstration dataset.  Replace with your own.
+    Load the training dataset.
 
-    Each record must have a 'text' key containing the fully-formatted training
-    example (e.g. a chat template string).  SFTTrainer trains the model to
-    predict every token in 'text' by default; set dataset_text_field or use
-    a formatting_func for more control.
+    If DATASET_PATH points to a JSONL file (e.g. produced by
+    build_dayo_dataset.py), every line is parsed as JSON and must contain a
+    'text' key with a fully-formatted Qwen2.5 chat string.
+
+    Otherwise the small built-in demonstration dataset is used.
     """
+    if DATASET_PATH and os.path.isfile(DATASET_PATH):
+        print(f"Loading dataset from '{DATASET_PATH}' …")
+        with open(DATASET_PATH, encoding="utf-8") as f:
+            examples = [json.loads(line) for line in f if line.strip()]
+        print(f"Loaded {len(examples)} examples.")
+        return Dataset.from_list(examples)
+
+    print("DATASET_PATH not set or file not found — using built-in demo dataset.")
     examples = [
         {
             "text": (

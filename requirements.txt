@@ -10,3 +10,6 @@ trl>=0.12.0          # GRPOTrainer + GRPOConfig stable from 0.12
 peft>=0.13.0
 datasets>=2.18.0
 accelerate>=0.30.0
+
+# Dataset generation (build_dayo_dataset.py)
+google-generativeai>=0.8.0

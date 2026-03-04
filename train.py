@@ -172,8 +172,8 @@ def reward_length(completions: list[str], **kwargs) -> list[float]:
                 torch.tensor(-((n_words - target_words) ** 2) / (2 * sigma ** 2))
             )
         )
-        #rewards.append(reward)
-        rewards.append(1.0)
+        rewards.append(reward)
+        #rewards.append(1.0)
     return rewards
 
 
@@ -214,7 +214,7 @@ def main():
         temperature=0.9,
         # KL penalty coefficient (β in the GRPO paper).
         # Larger β keeps the policy closer to the reference; 0.0 disables KL.
-        beta=0.1,
+        beta=0.2,
 
         # ── Precision ─────────────────────────────────────────────────────────
         # Do NOT enable fp16/bf16 flags here — we handle dtype at model-load

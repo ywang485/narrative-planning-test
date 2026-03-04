@@ -303,7 +303,7 @@ def _conciseness_score(
 # ---------------------------------------------------------------------------
 # Reward function(s)
 # ---------------------------------------------------------------------------
-def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
+def reward_llm_judge(completions: list, **kwargs) -> list[float]:
     """
     Combined reward: LLM-as-judge quality score (via Google Gemini) + conciseness.
 
@@ -314,8 +314,10 @@ def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
       - 30 % — Conciseness: full marks up to 80 words, linearly penalised up to 250
 
     Args:
-        completions: list of generated text strings (one per sample in the batch).
-        **kwargs: GRPOTrainer passes `prompts` (list[str]) aligned with completions.
+        completions: list of completions per sample — either plain strings or lists
+            of message dicts (conversational format) from GRPOTrainer.
+        **kwargs: GRPOTrainer passes `prompts` (same format as completions) aligned
+            with completions.
 
     Returns:
         List of scalar reward values in [0.0, 1.0], one per completion.

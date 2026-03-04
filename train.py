@@ -193,7 +193,7 @@ def main():
 
     training_args = GRPOConfig(
         output_dir=OUTPUT_DIR,
-        num_train_epochs=1,
+        num_train_epochs=50,
 
         # ── Batch / memory ──────────────────────────────────────────────────
         # Keep the per-device batch small — a 7B model leaves little headroom.
@@ -230,7 +230,7 @@ def main():
 
         # ── Logging / checkpointing ───────────────────────────────────────────
         logging_steps=5,
-        save_steps=50,
+        save_steps=5,
         save_total_limit=2,
         report_to="wandb",         # set to "wandb" or "tensorboard" if desired
         remove_unused_columns=False,

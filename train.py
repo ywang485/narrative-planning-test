@@ -216,14 +216,14 @@ def build_dataset() -> Dataset:
     function(s).
     """
     examples = [
-        {"prompt": "Explain gradient descent in simple terms."},
-        {"prompt": "What are the key differences between supervised and unsupervised learning?"},
-        {"prompt": "Describe how the transformer attention mechanism works."},
-        {"prompt": "What is overfitting and how can it be prevented?"},
-        {"prompt": "Explain the bias-variance tradeoff."},
-        {"prompt": "What is backpropagation and why is it important?"},
-        {"prompt": "How does weight decay act as a regularizer?"},
-        {"prompt": "What is the purpose of batch normalization?"},
+        {"prompt": [{"role": "user", "content": "Explain gradient descent in simple terms."}]},
+        {"prompt": [{"role": "user", "content": "What are the key differences between supervised and unsupervised learning?"}]},
+        {"prompt": [{"role": "user", "content": "Describe how the transformer attention mechanism works."}]},
+        {"prompt": [{"role": "user", "content": "What is overfitting and how can it be prevented?"}]},
+        {"prompt": [{"role": "user", "content": "Explain the bias-variance tradeoff."}]},
+        {"prompt": [{"role": "user", "content": "What is backpropagation and why is it important?"}]},
+        {"prompt": [{"role": "user", "content": "How does weight decay act as a regularizer?"}]},
+        {"prompt": [{"role": "user", "content": "What is the purpose of batch normalization?"}]},
     ]
     return Dataset.from_list(examples)
 

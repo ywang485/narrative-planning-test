@@ -15,6 +15,7 @@ Install dependencies:
   pip install -r requirements.txt
 """
 
+import json
 import os
 import re
 
@@ -34,22 +35,55 @@ from trl import GRPOConfig, GRPOTrainer
 from util import patch_forward_with_safe_logits, patch_generate_with_safe_logits
 
 # ---------------------------------------------------------------------------
-# Configuration — tweak these to suit your run
+# Configuration — config file + env-vars
+#
+# Values are resolved in this priority order (highest first):
+#   1. Environment variable
+#   2. JSON config file  (default: grpo_config.json, override with CONFIG_FILE=)
+#   3. Built-in default
+#
+# Example config file (grpo_config.json):
+#   {
+#     "model_name": "Qwen/Qwen2.5-7B-Instruct",
+#     "output_dir": "./qwen2.5-7b-grpo-lora",
+#     "checkpoint_path": "./qwen2.5-7b-sft-lora",
+#     "gemini_model": "gemini-2.0-flash",
+#     "lora_r": 16,
+#     "lora_alpha": 32,
+#     "lora_dropout": 0.05
+#   }
 # ---------------------------------------------------------------------------
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # swap to 3B if memory is tight
-OUTPUT_DIR = "./qwen2.5-7b-grpo-lora"
+def _load_config(path: str) -> dict:
+    if path and os.path.isfile(path):
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        print(f"Loaded config file '{path}'.")
+        return cfg
+    return {}
 
+_cfg = _load_config(os.getenv("CONFIG_FILE", "grpo_config.json"))
+
+def _get(key: str, env_var: str, default):
+    """Resolve a config value: env-var > config file > default."""
+    env_val = os.getenv(env_var)
+    if env_val is not None:
+        return env_val
+    return _cfg.get(key, default)
+
+MODEL_NAME       = _get("model_name",      "MODEL_NAME",      "Qwen/Qwen2.5-7B-Instruct")
+OUTPUT_DIR       = _get("output_dir",      "OUTPUT_DIR",      "./qwen2.5-7b-grpo-lora")
 # Optional: path to a prior checkpoint to use as the starting point for GRPO.
 #   - LoRA adapter checkpoint (contains adapter_config.json): the adapter is
 #     loaded on top of MODEL_NAME and training continues from those weights.
 #   - Full / merged model directory: loaded directly as the base model, then a
 #     fresh LoRA adapter is applied before GRPO training starts.
-# Leave as "" (or unset CHECKPOINT_PATH env var) to start from MODEL_NAME.
-CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", "")
+# Leave as "" to start from MODEL_NAME.
+CHECKPOINT_PATH  = _get("checkpoint_path", "CHECKPOINT_PATH", "")
+GEMINI_MODEL     = _get("gemini_model",    "GEMINI_MODEL",    "gemini-2.0-flash")
 
-LORA_R = 16
-LORA_ALPHA = 32
-LORA_DROPOUT = 0.05
+LORA_R       = int(_get("lora_r",       "LORA_R",       16))
+LORA_ALPHA   = int(_get("lora_alpha",   "LORA_ALPHA",   32))
+LORA_DROPOUT = float(_get("lora_dropout", "LORA_DROPOUT", 0.05))
 
 # These target all the linear projections inside each transformer block.
 # Qwen2 shares the same projection names as LLaMA-style models.
@@ -208,7 +242,7 @@ def _get_gemini_model():
                 "Set GEMINI_API_KEY (or GOOGLE_API_KEY) to use the LLM-as-judge reward."
             )
         genai.configure(api_key=api_key)
-        _gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+        _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
     return _gemini_model
 
 

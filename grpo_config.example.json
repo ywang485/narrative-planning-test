@@ -1,0 +1,9 @@
+{
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "output_dir": "./qwen2.5-7b-grpo-lora",
+  "checkpoint_path": "",
+  "gemini_model": "gemini-2.0-flash",
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05
+}

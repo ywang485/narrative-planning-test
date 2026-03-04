@@ -16,6 +16,7 @@ Install dependencies:
 """
 
 import os
+import re
 
 # Must be set before `import torch`.
 # Instructs PyTorch not to reserve the full MPS memory pool upfront.
@@ -24,6 +25,7 @@ import os
 # with causal masks) silently fall back to CPU instead of producing NaN/inf.
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
+import google.generativeai as genai
 import torch
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
@@ -146,38 +148,84 @@ def build_dataset() -> Dataset:
 
 
 # ---------------------------------------------------------------------------
+# Gemini judge helper
+# ---------------------------------------------------------------------------
+_gemini_model = None
+
+def _get_gemini_model():
+    global _gemini_model
+    if _gemini_model is None:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise EnvironmentError(
+                "Set GEMINI_API_KEY (or GOOGLE_API_KEY) to use the LLM-as-judge reward."
+            )
+        genai.configure(api_key=api_key)
+        _gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+    return _gemini_model
+
+
+def _gemini_score(prompt: str, completion: str) -> float:
+    """Ask Gemini to rate how well `completion` answers `prompt` on 0–10.
+    Returns a float in [0.0, 1.0]. Falls back to 0.0 on any error."""
+    judge_prompt = (
+        "You are an expert evaluator. Rate how well the following answer addresses "
+        "the question. Reply with a single integer from 0 (completely wrong or "
+        "irrelevant) to 10 (perfect, accurate, and complete).\n\n"
+        f"Question: {prompt}\n\n"
+        f"Answer: {completion}\n\n"
+        "Score (0-10):"
+    )
+    try:
+        model = _get_gemini_model()
+        response = model.generate_content(judge_prompt)
+        text = response.text.strip()
+        # Extract first integer found in the response
+        match = re.search(r"\b(\d{1,2})\b", text)
+        if match:
+            score = int(match.group(1))
+            return min(max(score, 0), 10) / 10.0
+    except Exception as e:
+        print(f"[gemini_score] Error: {e}")
+    return 0.0
+
+
+def _conciseness_score(text: str, ideal: int = 80, max_words: int = 250) -> float:
+    """Returns 1.0 for ≤ `ideal` words, linearly decays to 0.0 at `max_words`."""
+    n = len(text.split())
+    if n <= ideal:
+        return 1.0
+    if n >= max_words:
+        return 0.0
+    return 1.0 - (n - ideal) / (max_words - ideal)
+
+
+# ---------------------------------------------------------------------------
 # Reward function(s)
 # ---------------------------------------------------------------------------
-def reward_length(completions: list[str], **kwargs) -> list[float]:
+def reward_llm_judge(completions: list[str], **kwargs) -> list[float]:
     """
-    Demo reward: a Gaussian bell centred on a target word count.
+    Combined reward: LLM-as-judge quality score (via Google Gemini) + conciseness.
 
-    Replace or extend this with a meaningful reward signal, for example:
-      - a trained reward model
-      - rule-based quality / correctness checks
-      - tool-call success / code execution results
-      - human preference scores
+    Requires GEMINI_API_KEY (or GOOGLE_API_KEY) to be set in the environment.
+
+    Score breakdown:
+      - 70 % — Gemini rates how well the completion answers the question (0–10 → 0–1)
+      - 30 % — Conciseness: full marks up to 80 words, linearly penalised up to 250
 
     Args:
-        completions: list of generated text strings (one per sample in the
-                     rolled-out batch).
-        **kwargs: the GRPOTrainer may pass additional fields from the dataset
-                  row (e.g. ground-truth answers).
+        completions: list of generated text strings (one per sample in the batch).
+        **kwargs: GRPOTrainer passes `prompts` (list[str]) aligned with completions.
 
     Returns:
-        List of scalar reward values, one per completion.
+        List of scalar reward values in [0.0, 1.0], one per completion.
     """
-    target_words = 150
-    sigma = 80
+    prompts = kwargs.get("prompts", [""] * len(completions))
     rewards = []
-    for text in completions:
-        n_words = len(text.split())
-        reward = float(
-            torch.exp(
-                torch.tensor(-((n_words - target_words) ** 2) / (2 * sigma ** 2))
-            )
-        )
-        rewards.append(reward)
+    for prompt, completion in zip(prompts, completions):
+        llm = _gemini_score(prompt, completion)
+        concise = _conciseness_score(completion)
+        rewards.append(0.7 * llm + 0.3 * concise)
     return rewards
 
 
@@ -245,7 +293,7 @@ def main():
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,   # 'tokenizer=' also accepted in older TRL
-        reward_funcs=reward_length,   # pass a list for multiple reward signals
+        reward_funcs=reward_llm_judge,  # LLM-as-judge (Gemini) + conciseness
     )
 
     print("Starting GRPO training …")

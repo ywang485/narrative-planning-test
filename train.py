@@ -207,7 +207,7 @@ def main():
         # ── GRPO-specific ─────────────────────────────────────────────────────
         # Number of completions sampled per prompt per update step.
         # Lower values save memory; minimum useful value is 2.
-        num_generations=4,
+        num_generations=1,
         max_prompt_length=256,
         max_completion_length=256,
         temperature=0.9,
